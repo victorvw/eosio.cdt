@@ -36,7 +36,7 @@ class contract {
        * @param first_receiver - The account the incoming action was first received at.
        * @param ds - The datastream used
        */
-      contract( name self, name first_receiver, datastream<const char*> ds ):_self(self),_first_receiver(first_receiver),_ds(ds) {}
+      contract(){};// name self, name first_receiver, datastream<const char*> ds ):_self(self),_first_receiver(first_receiver),_ds(ds) {}
 
       /**
        *
@@ -75,6 +75,17 @@ class contract {
        */
       inline const datastream<const char*>& get_datastream()const { return _ds; }
 
+      static contract& instance() {
+          static contract c;
+          return c;
+      }
+
+      static void init( name self, name first_receiver, datastream<const char*> ds ) {
+          auto& i = instance();
+          i._self = self;
+          i._first_receiver = first_receiver;
+          i._ds = ds;
+      }
    protected:
       /**
        * The name of the account this contract is deployed on.

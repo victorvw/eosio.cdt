@@ -1,9 +1,7 @@
 #pragma once
 #include <eosio/action.hpp>
-#include <boost/fusion/adapted/std_tuple.hpp>
-#include <boost/fusion/include/std_tuple.hpp>
-
-#include <boost/mp11/tuple.hpp>
+#include <eosio/contract.hpp>
+#include <tuple>
 
 #ifdef __cplusplus 
 extern "C" {
@@ -93,17 +91,20 @@ namespace eosio {
       datastream<const char*> ds((char*)buffer, size);
       ds >> args;
 
-      T inst(self, code, ds);
+      contract::init( self, code, ds );
+      T inst;
 
       auto f2 = [&]( auto... a ){
          return ((&inst)->*func)( a... );
       };
 
       if constexpr( !std::is_same_v<void,R> ) {
-         auto r = eosio::pack(boost::mp11::tuple_apply( f2, args ));
+         auto r = eosio::pack( std::apply( f2, args ) ); 
+    //     auto r = eosio::pack(boost::mp11::tuple_apply( f2, args ));
          ::set_action_return_value( r.data(), r.size() );
       } else {
-         boost::mp11::tuple_apply( f2, args );
+         //boost::mp11::tuple_apply( f2, args );
+         std::apply( f2, args );
       }
 
       if ( size ) {
@@ -127,17 +128,18 @@ namespace eosio {
       datastream<const char*> ds((char*)buffer, size);
       ds >> args;
 
-      T inst(self, code, ds);
+      contract::init( self, code, ds );
+      T inst;
 
       auto f2 = [&]( auto... a ){
          return ((&inst)->*func)( a... );
       };
 
       if constexpr( !std::is_same_v<void,R> ) {
-         auto r = eosio::pack(boost::mp11::tuple_apply( f2, args ));
+         auto r = eosio::pack(std::apply( f2, args ));
          ::set_action_return_value( r.data(), r.size() );
       } else {
-         boost::mp11::tuple_apply( f2, args );
+          std::apply( f2, args );
       }
 
       if ( size ) {
