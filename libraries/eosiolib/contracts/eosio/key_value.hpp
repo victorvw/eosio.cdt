@@ -80,7 +80,7 @@ namespace detail {
 /**
  * The key_type struct is used to store the binary representation of a key.
  */
-struct key_type : private std::vector<char> {
+struct key_type : protected std::vector<char> {
    key_type() = default;
 
    explicit key_type(std::vector<char>&& v) : std::vector<char>(v) {}
@@ -98,26 +98,6 @@ struct key_type : private std::vector<char> {
       return *this;
    }
 
-   static key_type from_hex( const std::string_view& str ) {
-      key_type out;
-
-      check( str.size() % 2 == 0, "invalid hex string length" );
-      out.reserve( str.size() / 2 );
-
-      auto start = str.data();
-      auto end   = start + str.size();
-      for(const char* p = start; p != end; p+=2 ) {
-          auto hic = p[0];
-          auto lowc = p[1];
-
-          uint8_t hi  = hic  <= '9' ? hic-'0' : 10+(hic-'a');
-          uint8_t low = lowc <= '9' ? lowc-'0' : 10+(lowc-'a');
-
-          out.push_back( char((hi << 4) | low) );
-      }
-
-      return out;
-   }
 
    std::string to_hex() const {
       const char* hex_characters = "0123456789abcdef";
@@ -150,21 +130,51 @@ struct key_type : private std::vector<char> {
    using std::vector<char>::resize;
 };
 
+struct partial_key : public key_type {
+   using key_type::key_type;
+};
+
+struct full_key : public key_type {
+   using key_type::key_type;
+
+   full_key(const partial_key& a, const partial_key& b) {
+      *this += a + b;
+   }
+
+   static full_key from_hex( const std::string_view& str ) {
+      full_key out;
+
+      check( str.size() % 2 == 0, "invalid hex string length" );
+      out.reserve( str.size() / 2 );
+
+      auto start = str.data();
+      auto end   = start + str.size();
+      for(const char* p = start; p != end; p+=2 ) {
+          auto hic = p[0];
+          auto lowc = p[1];
+
+          uint8_t hi  = hic  <= '9' ? hic-'0' : 10+(hic-'a');
+          uint8_t low = lowc <= '9' ? lowc-'0' : 10+(lowc-'a');
+
+          out.push_back( char((hi << 4) | low) );
+      }
+
+      return out;
+   }
+};
+
 /* @cond PRIVATE */
 template <typename T>
-inline key_type make_key(T&& t) {
+inline partial_key make_key(T&& t) {
    auto bytes = convert_to_key(std::forward<T>(t));
    eosio::check((bool)bytes, "There was a failure in make_key."); 
-   return key_type(std::move(bytes.value()));
+   return partial_key(std::move(bytes.value()));
 }
 
-inline key_type make_prefix(eosio::name table_name, eosio::name index_name, uint8_t status = 1) {
+inline partial_key make_prefix(eosio::name table_name, eosio::name index_name, uint8_t status = 1) {
    return make_key(std::make_tuple(status, table_name, index_name));
 }
 
-inline key_type table_key(const key_type& prefix, const key_type& key) {
-   return prefix + key;
-}
 /* @endcond */
 
 // This is the "best" way to document a function that does not technically exist using Doxygen.
@@ -477,7 +487,7 @@ class kv_table {
       eosio::name table_name;
       eosio::name contract_name;
 
-      key_type to_table_key( const key_type& k )const{ return table_key( prefix, k ); }
+      full_key to_full_key( const partial_key& k )const{ return full_key( prefix, k ); }
 
    protected:
       kv_index() = default;
@@ -489,14 +499,14 @@ class kv_table {
          };
       }
 
-      key_type get_key(const T& inst) const { return key_function(inst); }
+      partial_key get_key(const T& inst) const { return key_function(inst); }
       kv_table* tbl;
-      key_type prefix;
+      partial_key prefix;
 
    private:
       friend kv_table;
 
-      std::function<key_type(const T&)> key_function;
+      std::function<partial_key(const T&)> key_function;
 
       virtual void setup() = 0;
    };
@@ -540,12 +550,16 @@ public:
        * @return An iterator to the found object OR the `end` iterator if the given key was not found.
        */
       iterator find(const K& key) const {
-         auto t_key = table_key(prefix, make_key(key));
+         auto t_key = full_key(prefix, make_key(key));
 
          return find(t_key);
       }
 
-      iterator find(const key_type& key) const {
+      iterator find(const partial_key& key) const {
+         return find(full_key(prefix, key));
+      }
+
+      iterator find(const full_key& key) const {
          uint32_t itr = internal_use_do_not_use::kv_it_create(tbl->db_name, contract_name.value, prefix.data(), prefix.size());
          int32_t itr_stat = internal_use_do_not_use::kv_it_lower_bound(itr, key.data(), key.size());
 
@@ -567,7 +581,7 @@ public:
        * @return If the key exists or not.
        */
       bool exists(const K& key) const {
-         auto t_key = table_key(prefix, make_key(key));
+         auto t_key = full_key(prefix, make_key(key));
          return exists(t_key);
       }
 
@@ -587,7 +601,11 @@ public:
          return operator[](make_key(key));
       }
 
-      T operator[](const key_type& key) const {
+      T operator[](const partial_key& key) const {
+         return operator[](full_key(prefix, key));
+      }
+
+      T operator[](const full_key& key) const {
          auto opt = get(key);
          eosio::check(opt.has_value(), __FILE__ ":" + std::to_string(__LINE__) + " Key not found in `[]`");
          return *opt;
@@ -604,8 +622,12 @@ public:
          return get(make_key(key));
       }
 
-      std::optional<T> get(const key_type& k ) const {
-         auto key =   table_key( prefix, k );
+      std::optional<T> get(const partial_key& k ) const {
+         auto key = full_key( prefix, k );
+         return get(key);
+      }
+      
+      std::optional<T> get(const full_key& key) const {
          uint32_t value_size;
          uint32_t actual_data_size;
          std::optional<T> ret_val;
@@ -703,10 +725,14 @@ public:
          return lower_bound(make_key(key));
       }
 
-      iterator lower_bound(const key_type& k ) const {
-         auto key = table_key( prefix, k );
+      iterator lower_bound(const partial_key& k ) const {
+         auto key = full_key( prefix, k );
+         return lower_bound(key);
+      }
+
+      iterator lower_bound(const full_key& k ) const {
          uint32_t itr = internal_use_do_not_use::kv_it_create(tbl->db_name, contract_name.value, prefix.data(), prefix.size());
-         int32_t itr_stat = internal_use_do_not_use::kv_it_lower_bound(itr, key.data(), key.size());
+         int32_t itr_stat = internal_use_do_not_use::kv_it_lower_bound(itr, k.data(), k.size());
 
          return {itr, static_cast<typename iterator::status>(itr_stat), this};
       }
@@ -721,7 +747,12 @@ public:
          return upper_bound(make_key(key));
       }
 
-      iterator upper_bound(const key_type& key) const {
+      iterator upper_bound(const partial_key& k ) const {
+         auto key = full_key( prefix, k );
+         return upper_bound(key);
+      }
+
+      iterator upper_bound(const full_key& key) const {
          auto it = lower_bound(key);
 
          auto cmp = it.key_compare(key);
@@ -745,8 +776,8 @@ public:
       }
 
       std::vector<T> range(const key_type& b_key, const key_type& e_key) const {
-         auto b = table_key(prefix, make_key(b_key));
-         auto e = table_key(prefix, make_key(e_key));
+         auto b = full_key(prefix, make_key(b_key));
+         auto e = full_key(prefix, make_key(e_key));
          std::vector<T> return_values;
 
          for(auto itr = lower_bound(b), end_itr = lower_bound(e); itr < end_itr; ++itr) {
@@ -774,7 +805,7 @@ public:
       T old_value;
 
       auto primary_key = primary_index->get_key(value);
-      auto tbl_key = table_key(make_prefix(table_name, primary_index->index_name), primary_key);
+      auto tbl_key = full_key(make_prefix(table_name, primary_index->index_name), primary_key);
 
       auto primary_key_found = internal_use_do_not_use::kv_get(db_name, contract_name.value, tbl_key.data(), tbl_key.size(), value_size);
 
@@ -790,7 +821,7 @@ public:
       }
 
       for (const auto& idx : secondary_indices) {
-         auto sec_tbl_key = table_key(make_prefix(table_name, idx->index_name), idx->get_key(value));
+         auto sec_tbl_key = full_key(make_prefix(table_name, idx->index_name), idx->get_key(value));
          auto sec_found = internal_use_do_not_use::kv_get(db_name, contract_name.value, sec_tbl_key.data(), sec_tbl_key.size(), value_size);
 
          if (!primary_key_found) {
@@ -808,7 +839,7 @@ public:
                   free(buffer);
                }
             } else {
-               auto old_sec_key = table_key(make_prefix(table_name, idx->index_name), idx->get_key(old_value));
+               auto old_sec_key = full_key(make_prefix(table_name, idx->index_name), idx->get_key(old_value));
                internal_use_do_not_use::kv_erase(db_name, contract_name.value, old_sec_key.data(), old_sec_key.size());
                internal_use_do_not_use::kv_set(db_name, contract_name.value, sec_tbl_key.data(), sec_tbl_key.size(), tbl_key.data(), tbl_key.size());
             }
@@ -838,7 +869,7 @@ public:
       uint32_t value_size;
 
       auto primary_key = primary_index->get_key(value);
-      auto tbl_key = table_key(make_prefix(table_name, primary_index->index_name), primary_key);
+      auto tbl_key = full_key(make_prefix(table_name, primary_index->index_name), primary_key);
       auto primary_key_found = internal_use_do_not_use::kv_get(db_name, contract_name.value, tbl_key.data(), tbl_key.size(), value_size);
 
       if (!primary_key_found) {
@@ -846,7 +877,7 @@ public:
       }
 
       for (const auto& idx : secondary_indices) {
-         auto sec_tbl_key = table_key(make_prefix(table_name, idx->index_name), idx->get_key(value));
+         auto sec_tbl_key = full_key(make_prefix(table_name, idx->index_name), idx->get_key(value));
          internal_use_do_not_use::kv_erase(db_name, contract_name.value, sec_tbl_key.data(), sec_tbl_key.size());
       }
 
